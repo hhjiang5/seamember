@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>培训管理 · 船员管理系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%230b8fa5'/%3E%3Cpath d='m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar" id="topbar"></header>
+    <main class="content">
+
+      <div class="panel filterbar">
+        <div class="field" style="width:280px">
+          <label>船员</label>
+          <select class="select" id="fCrew"></select>
+        </div>
+        <div class="spacer"></div>
+        <div class="f-actions">
+          <button class="btn btn-primary" onclick="openEdit()">+ 新增培训</button>
+        </div>
+      </div>
+
+      <div class="banner" id="banner" style="display:none">
+        <span id="bannerIc"></span>
+        <span>正在查看船员 <span class="b-name" id="bannerName"></span> 的培训记录</span>
+        <span class="spacer"></span>
+        <button class="btn-link" onclick="clearBanner()">清除</button>
+      </div>
+
+      <div class="panel">
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+              <tr>
+                <th>船员</th><th>课程名称</th><th>培训类型</th><th>培训机构</th><th>培训时间</th><th>学时</th><th>成绩</th><th>结果</th><th style="width:110px">操作</th>
+              </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="tbl-foot" id="pager"></div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="js/common.js"></script>
+<script>
+  initPage('training', '培训管理', '岗前培训、安全培训与技能培训记录');
+
+  const TRAIN_TYPES = ['岗前培训', '安全培训', '技能培训', '复训'];
+  let page = 1, pages = 1, total = 0, list = [];
+
+  const urlCrewId = qCrewId();
+  const urlName = qName();
+
+  /* ---------- 船员下拉 ---------- */
+  async function initCrewSelect() {
+    try {
+      await fillCrewSelect($('#fCrew'), { all: true });
+      if (urlCrewId) {
+        $('#fCrew').value = urlCrewId;
+        showBanner(urlCrewId);
+      }
+      $('#fCrew').onchange = () => {
+        if ($('#fCrew').value) showBanner($('#fCrew').value);
+        else $('#banner').style.display = 'none';
+        page = 1;
+        load();
+      };
+      if (urlCrewId) load();
+    } catch (err) { toast(err.message, 'err'); }
+  }
+
+  async function showBanner(crewId) {
+    let name = urlName || '';
+    try {
+      const map = await crewMap();
+      if (map[crewId]) name = map[crewId].name;
+    } catch (e) { /* 忽略 */ }
+    $('#bannerName').textContent = name || ('船员#' + crewId);
+    $('#bannerIc').innerHTML = icon('training');
+    $('#banner').style.display = '';
+  }
+  function clearBanner() { $('#fCrew').value = ''; $('#banner').style.display = 'none'; page = 1; load(); }
+
+  /* ---------- 数据加载 ---------- */
+  async function load() {
+    try {
+      const params = new URLSearchParams({ pageNum: page, pageSize: 10 });
+      if ($('#fCrew').value) params.set('crewId', $('#fCrew').value);
+      const data = await api(`/api/training/page?${params}`);
+      list = data.records || [];
+      pages = data.pages || 1;
+      total = data.total || 0;
+      await renderTable();
+      renderPager($('#pager'), { current: page, pages, total, onChange: p => { page = p; load(); } });
+    } catch (err) {
+      toast(err.message, 'err');
+      $('#tbody').innerHTML = emptyRow(9, '数据加载失败', err.message);
+    }
+  }
+
+  async function renderTable() {
+    if (!list.length) {
+      $('#tbody').innerHTML = emptyRow(9, '暂无培训记录', '点击「新增培训」登记第一条培训记录');
+      return;
+    }
+    const map = await crewMap();
+    $('#tbody').innerHTML = list.map(t => {
+      const crew = map[t.crewId] || {};
+      const score = t.score != null ? Number(t.score) : null;
+      const scoreHtml = score === null ? '—'
+        : `<span style="font-weight:800;color:${score >= 80 ? 'var(--green)' : score >= 60 ? 'var(--ink)' : 'var(--red)'}">${score}</span>`;
+      return `
+        <tr>
+          <td>
+            <div class="cell-crew">
+              ${avatarHTML(crew.name || '?', 32)}
+              <div class="c-main">
+                <div class="c-name"><a href="crew.html">${esc(crew.name || ('船员#' + t.crewId))}</a></div>
+                <div class="c-sub">${esc(crew.crewNo || '')}</div>
+              </div>
+            </div>
+          </td>
+          <td><div class="cell-two"><div class="t1">${esc(t.courseName)}</div></div></td>
+          <td>${chip(t.trainType || '其他', 'blue')}</td>
+          <td>${esc(t.trainOrg || '—')}</td>
+          <td>
+            <div class="cell-two">
+              <div class="t1">${fmtDate(t.trainStart)} ~ ${fmtDate(t.trainEnd)}</div>
+            </div>
+          </td>
+          <td>${t.trainHours != null ? t.trainHours + ' 小时' : '—'}</td>
+          <td>${scoreHtml}</td>
+          <td>${passBadge(t.passFlag)}</td>
+          <td>
+            <div class="td-actions">
+              <button class="btn-icon" title="编辑" onclick="openEdit(${t.id})">${icon('edit')}</button>
+              <button class="btn-icon danger" title="删除" onclick="removeTraining(${t.id}, '${esc(t.courseName)}')">${icon('trash')}</button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  /* ---------- 新增 / 编辑 ---------- */
+  function openEdit(id) {
+    const t = id ? list.find(x => x.id === id) : null;
+    const m = showModal({
+      title: t ? '编辑培训' : '新增培训',
+      width: 640,
+      body: `
+        <div class="form-grid">
+          <input type="hidden" id="eId" value="${t ? t.id : ''}">
+          <div class="field full"><label>船员<b>*</b></label>
+            <select class="select" id="eCrewId"><option value="">选择船员</option></select>
+          </div>
+          <div class="field"><label>课程名称<b>*</b></label><input class="input" id="eCourse" value="${t ? esc(t.courseName) : ''}" placeholder="如 基本安全培训"></div>
+          <div class="field"><label>培训类型</label>
+            <select class="select" id="eType">
+              ${TRAIN_TYPES.map(x => `<option value="${x}" ${t && t.trainType === x ? 'selected' : ''}>${x}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>培训机构</label><input class="input" id="eOrg" value="${t ? esc(t.trainOrg) : ''}" placeholder="培训机构名称"></div>
+          <div class="field"><label>开始日期</label><input class="input" type="date" id="eStart" value="${t && t.trainStart ? fmtDate(t.trainStart) : ''}"></div>
+          <div class="field"><label>结束日期</label><input class="input" type="date" id="eEnd" value="${t && t.trainEnd ? fmtDate(t.trainEnd) : ''}"></div>
+          <div class="field"><label>学时(小时)</label><input class="input" type="number" id="eHours" value="${t && t.trainHours != null ? t.trainHours : ''}" placeholder="培训时长"></div>
+          <div class="field"><label>成绩</label><input class="input" type="number" step="0.1" id="eScore" value="${t && t.score != null ? t.score : ''}" placeholder="考核分数"></div>
+          <div class="field"><label>考核结果</label>
+            <select class="select" id="ePass">
+              <option value="1" ${t && t.passFlag === 1 ? 'selected' : ''}>合格</option>
+              <option value="0" ${t && t.passFlag === 0 ? 'selected' : ''}>不合格</option>
+            </select>
+          </div>
+        </div>`,
+      foot: `
+        <button class="btn btn-ghost" data-close>取消</button>
+        <button class="btn btn-primary" data-save>保存</button>`,
+      onOpen(root) {
+        fillCrewSelect($('#eCrewId', root), { placeholder: '选择船员' })
+          .then(() => {
+            const preset = t ? t.crewId : $('#fCrew').value;
+            if (preset) $('#eCrewId', root).value = String(preset);
+          })
+          .catch(err => toast(err.message, 'err'));
+
+        $('[data-save]', root).onclick = async () => {
+          const crewId = $('#eCrewId', root).value;
+          const courseName = $('#eCourse', root).value.trim();
+          if (!crewId) { toast('请选择船员', 'err'); return; }
+          if (!courseName) { toast('请填写课程名称', 'err'); return; }
+          const id = $('#eId', root).value;
+          const body = {
+            crewId: +crewId,
+            courseName,
+            trainType: $('#eType', root).value,
+            trainOrg: $('#eOrg', root).value.trim(),
+            trainStart: $('#eStart', root).value || null,
+            trainEnd: $('#eEnd', root).value || null,
+            trainHours: $('#eHours', root).value === '' ? null : +$('#eHours', root).value,
+            score: $('#eScore', root).value === '' ? null : +$('#eScore', root).value,
+            passFlag: +$('#ePass', root).value
+          };
+          if (id) body.id = +id;
+          try {
+            if (id) await put('/api/training', body); else await post('/api/training', body);
+            toast(id ? '培训记录已更新' : '培训记录已添加');
+            m.close();
+            load();
+          } catch (err) {
+            toast(err.message, 'err');
+          }
+        };
+      }
+    });
+  }
+
+  /* ---------- 删除 ---------- */
+  async function removeTraining(id, name) {
+    const ok = await ask(`确定删除培训记录「${name}」吗?`, { okText: '删除' });
+    if (!ok) return;
+    try {
+      await del(`/api/training/${id}`);
+      toast('培训记录已删除');
+      if (list.length === 1 && page > 1) page--;
+      load();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  /* ---------- 初始化 ---------- */
+  load();
+  initCrewSelect();
+</script>
+</body>
+</html>

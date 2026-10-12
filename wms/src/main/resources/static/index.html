@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>总览 · 船员管理系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%230b8fa5'/%3E%3Cpath d='m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar" id="topbar"></header>
+    <main class="content">
+
+      <!-- 欢迎横幅 -->
+      <section class="hero">
+        <div class="hero-in">
+          <div>
+            <div class="hero-greet" id="greet">您好</div>
+            <div class="hero-sub" id="heroSub">正在加载今日数据…</div>
+          </div>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="crew.html?add=1">+ 新增船员</a>
+            <a class="btn btn-glass" href="dispatch.html">⚓ 派员上船</a>
+          </div>
+        </div>
+      </section>
+
+      <!-- 统计卡片 -->
+      <section class="stats">
+        <div class="stat teal" onclick="location.href='crew.html'">
+          <div class="st-ic"></div>
+          <div class="num" id="stTotal">–</div>
+          <div class="lbl">船员总数</div>
+        </div>
+        <div class="stat green" onclick="location.href='crew.html?status=' + encodeURIComponent('在船')">
+          <div class="st-ic"></div>
+          <div class="num" id="stOnboard">–</div>
+          <div class="lbl">在船人数</div>
+        </div>
+        <div class="stat blue" onclick="location.href='crew.html?status=' + encodeURIComponent('在岸')">
+          <div class="st-ic"></div>
+          <div class="num" id="stOnshore">–</div>
+          <div class="lbl">在岸人数</div>
+        </div>
+        <div class="stat slate" onclick="location.href='crew.html?status=' + encodeURIComponent('休假')">
+          <div class="st-ic"></div>
+          <div class="num" id="stLeave">–</div>
+          <div class="lbl">休假人数</div>
+        </div>
+        <div class="stat amber" onclick="location.href='cert.html'">
+          <div class="st-ic"></div>
+          <div class="num" id="stCert">–</div>
+          <div class="lbl">证书到期预警 · 30天内</div>
+        </div>
+        <div class="stat red" onclick="location.href='contract.html'">
+          <div class="st-ic"></div>
+          <div class="num" id="stContract">–</div>
+          <div class="lbl">合同到期预警 · 30天内</div>
+        </div>
+      </section>
+
+      <!-- 到期清单 -->
+      <section class="dash-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="hd-ic"></span>
+            <h2>即将到期的证书</h2>
+            <span class="hd-count"><span class="chip amber" id="certCount">0 本</span></span>
+            <span class="spacer"></span>
+            <a class="btn-link" href="cert.html">查看全部 →</a>
+          </div>
+          <div class="exp-list" id="certList"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="hd-ic"></span>
+            <h2>即将到期的合同</h2>
+            <span class="hd-count"><span class="chip red" id="contractCount">0 份</span></span>
+            <span class="spacer"></span>
+            <a class="btn-link" href="contract.html">查看全部 →</a>
+          </div>
+          <div class="exp-list" id="contractList"></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="js/common.js"></script>
+<script>
+  initPage('home', '总览');
+
+  /* ---- 问候语 ---- */
+  (function () {
+    const h = new Date().getHours();
+    const part = h < 6 ? '夜深了' : h < 12 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
+    const u = getUser() || {};
+    $('#greet').textContent = `${part}，${u.realName || u.username || '管理员'}`;
+  })();
+
+  /* ---- 数字滚动动画(尊重减少动效偏好) ---- */
+  function countUp(el, target) {
+    target = target || 0;
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) { el.textContent = target; return; }
+    const dur = 650, t0 = performance.now();
+    function step(t) {
+      const p = Math.min(1, (t - t0) / dur);
+      el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  /* ---- 到期清单渲染 ---- */
+  function renderExpList(el, items, map, kind) {
+    if (!items || !items.length) {
+      el.innerHTML = `<div class="empty"><div class="e-ic">⚓</div><div class="e-t">未来30天没有${kind === 'cert' ? '证书' : '合同'}到期</div><div class="e-s">一切正常,继续保持</div></div>`;
+      return;
+    }
+    el.innerHTML = items.slice(0, 6).map(it => {
+      const c = map[it.crewId] || {};
+      const title = kind === 'cert' ? it.certName : `${it.contractType || '合同'} · ${it.contractNo || '—'}`;
+      const date = kind === 'cert' ? it.expireDate : it.endDate;
+      const sub = [c.name || ('船员#' + it.crewId), c.crewNo, kind === 'cert' ? it.certType : ''].filter(Boolean).join(' · ');
+      return `
+        <div class="exp-row">
+          ${avatarHTML(c.name || '?', 34)}
+          <div class="exp-main">
+            <div class="exp-title">${esc(title)}</div>
+            <div class="exp-sub">${esc(sub)}</div>
+          </div>
+          <div class="exp-right">
+            <div class="exp-date">${fmtDate(date)}</div>
+            ${daysChip(date)}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  /* ---- 数据加载 ---- */
+  (async function load() {
+    try {
+      const [total, onboard, onshore, leave, exCert, exCont] = await Promise.all([
+        api('/api/crew/page?pageNum=1&pageSize=1'),
+        api('/api/crew/page?pageNum=1&pageSize=1&status=' + encodeURIComponent('在船')),
+        api('/api/crew/page?pageNum=1&pageSize=1&status=' + encodeURIComponent('在岸')),
+        api('/api/crew/page?pageNum=1&pageSize=1&status=' + encodeURIComponent('休假')),
+        api('/api/cert/expiring'),
+        api('/api/contract/expiring')
+      ]);
+
+      countUp($('#stTotal'), total.total || 0);
+      countUp($('#stOnboard'), onboard.total || 0);
+      countUp($('#stOnshore'), onshore.total || 0);
+      countUp($('#stLeave'), leave.total || 0);
+      countUp($('#stCert'), (exCert || []).length);
+      countUp($('#stContract'), (exCont || []).length);
+
+      // 英雄横幅摘要
+      const week = '日一二三四五六'[new Date().getDay()];
+      const n = (exCert || []).length, m = (exCont || []).length;
+      if (n + m > 0) {
+        $('#heroSub').innerHTML =
+          `${new Date().getFullYear()}年${new Date().getMonth() + 1}月${new Date().getDate()}日 周${week} · ` +
+          `今日有 <span class="hl">${n}</span> 本证书、<span class="hl">${m}</span> 份合同将在 30 天内到期,建议尽快办理`;
+      } else {
+        $('#heroSub').textContent = `${new Date().getFullYear()}年${new Date().getMonth() + 1}月${new Date().getDate()}日 周${week} · 未来30天没有即将到期的证书或合同`;
+      }
+
+      // 到期清单
+      const map = await crewMap();
+      $('#certCount').textContent = `${(exCert || []).length} 本`;
+      $('#contractCount').textContent = `${(exCont || []).length} 份`;
+      renderExpList($('#certList'), exCert, map, 'cert');
+      renderExpList($('#contractList'), exCont, map, 'contract');
+
+      // 面板标题图标
+      $$('.panel-head .hd-ic').forEach((el, i) => { el.innerHTML = icon(i === 0 ? 'cert' : 'contract'); });
+      $$('.stat .st-ic').forEach((el, i) => {
+        el.innerHTML = icon(['crew', 'ship', 'anchor', 'calendar', 'cert', 'contract'][i]);
+      });
+    } catch (err) {
+      toast(err.message, 'err');
+      $('#heroSub').textContent = '数据加载失败,请确认后端服务已启动';
+    }
+  })();
+</script>
+</body>
+</html>

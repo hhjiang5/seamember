@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>证书管理 · 船员管理系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%230b8fa5'/%3E%3Cpath d='m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar" id="topbar"></header>
+    <main class="content">
+
+      <div class="panel filterbar">
+        <div class="seg" id="modeSeg">
+          <button data-mode="crew">按船员查看</button>
+          <button data-mode="expiring">到期预警 · 30天内</button>
+        </div>
+        <div class="field" id="crewField" style="width:280px">
+          <label>船员</label>
+          <select class="select" id="fCrew"></select>
+        </div>
+        <div class="spacer"></div>
+        <div class="f-actions">
+          <button class="btn btn-primary" id="btnAdd">+ 新增证书</button>
+        </div>
+      </div>
+
+      <div class="banner" id="banner" style="display:none">
+        <span id="bannerIc"></span>
+        <span>正在查看船员 <span class="b-name" id="bannerName"></span> 的证书</span>
+        <span class="spacer"></span>
+        <button class="btn-link" onclick="clearBanner()">清除</button>
+      </div>
+
+      <div class="panel">
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead id="thead"></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="tbl-foot"><span class="pg-info" id="countInfo"></span></div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="js/common.js"></script>
+<script>
+  initPage('cert', '证书管理', '证书签发与到期预警 · 从船员页可直接跳转到该船员的证书');
+
+  const CERT_TYPES = ['适任证书', '培训合格证', '海员证', '健康证明', '护照', '其他'];
+  const MODE_HEAD = {
+    crew: '<tr><th>证书名称</th><th>证书编号</th><th>类型</th><th>签发日期</th><th>到期日期</th><th>签发机构</th><th style="width:110px">操作</th></tr>',
+    expiring: '<tr><th>船员</th><th>证书名称</th><th>证书编号</th><th>类型</th><th>到期日期</th><th>签发机构</th><th style="width:110px">操作</th></tr>'
+  };
+
+  let mode = 'expiring';
+  let list = [];
+
+  const urlCrewId = qCrewId();
+  const urlName = qName();
+  if (urlCrewId) mode = 'crew';
+
+  /* ---------- 模式切换 ---------- */
+  $$('#modeSeg button').forEach(b => {
+    b.onclick = () => switchMode(b.dataset.mode);
+  });
+  function switchMode(m) {
+    mode = m;
+    $$('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+    $('#crewField').style.display = m === 'crew' ? '' : 'none';
+    $('#btnAdd').style.display = m === 'crew' ? '' : 'none';
+    if (m !== 'crew') $('#banner').style.display = 'none';
+    else if ($('#fCrew').value) showBanner($('#fCrew').value);
+    load();
+  }
+
+  /* ---------- 船员下拉 ---------- */
+  async function initCrewSelect() {
+    try {
+      await fillCrewSelect($('#fCrew'), { placeholder: '选择船员查看其证书' });
+      if (urlCrewId) $('#fCrew').value = urlCrewId;
+      $('#fCrew').onchange = () => {
+        if ($('#fCrew').value) showBanner($('#fCrew').value);
+        load();
+      };
+      // 下拉框异步填充完成后,若处于船员模式需重新加载(初始 load 时选项还是空的)
+      if (mode === 'crew') {
+        if ($('#fCrew').value) showBanner($('#fCrew').value);
+        load();
+      }
+    } catch (err) { toast(err.message, 'err'); }
+  }
+
+  /* ---------- 横幅 ---------- */
+  async function showBanner(crewId) {
+    let name = urlName || '';
+    try {
+      const map = await crewMap();
+      if (map[crewId]) name = map[crewId].name;
+      else {
+        const c = await api(`/api/crew/${crewId}`);
+        name = c.name;
+      }
+    } catch (e) { /* 名称解析失败时使用 URL 参数或占位 */ }
+    $('#bannerName').textContent = name || ('船员#' + crewId);
+    $('#bannerIc').innerHTML = icon('anchor');
+    $('#banner').style.display = '';
+  }
+  function clearBanner() { $('#fCrew').value = ''; $('#banner').style.display = 'none'; load(); }
+
+  /* ---------- 数据加载 ---------- */
+  async function load() {
+    try {
+      $('#thead').innerHTML = MODE_HEAD[mode];
+      if (mode === 'crew') {
+        const crewId = $('#fCrew').value;
+        if (!crewId) {
+          list = [];
+          $('#tbody').innerHTML = emptyRow(7, '请选择一位船员', '在上方下拉框中选择船员,即可查看并管理其证书');
+          $('#countInfo').textContent = '';
+          return;
+        }
+        list = await api(`/api/cert/list/${crewId}`) || [];
+        renderCrewMode();
+      } else {
+        list = await api('/api/cert/expiring') || [];
+        renderExpiringMode();
+      }
+      $('#countInfo').textContent = `共 ${list.length} 本证书`;
+    } catch (err) {
+      toast(err.message, 'err');
+      $('#tbody').innerHTML = emptyRow(7, '数据加载失败', err.message);
+    }
+  }
+
+  function certActions(c) {
+    return `
+      <div class="td-actions">
+        <button class="btn-icon" title="编辑" onclick="openEdit(${c.id})">${icon('edit')}</button>
+        <button class="btn-icon danger" title="删除" onclick="removeCert(${c.id}, '${esc(c.certName)}')">${icon('trash')}</button>
+      </div>`;
+  }
+
+  function renderCrewMode() {
+    if (!list.length) {
+      $('#tbody').innerHTML = emptyRow(7, '该船员还没有证书', '点击「新增证书」为该船员登记第一本证书');
+      return;
+    }
+    $('#tbody').innerHTML = list.map(c => `
+      <tr>
+        <td><div class="cell-two"><div class="t1">${esc(c.certName)}</div></div></td>
+        <td>${esc(c.certNo || '—')}</td>
+        <td>${chip(c.certType || '其他', 'teal')}</td>
+        <td>${fmtDate(c.issueDate)}</td>
+        <td>${fmtDate(c.expireDate)} ${daysChip(c.expireDate)}</td>
+        <td>${esc(c.issueOrg || '—')}</td>
+        <td>${certActions(c)}</td>
+      </tr>`).join('');
+  }
+
+  async function renderExpiringMode() {
+    if (!list.length) {
+      $('#tbody').innerHTML = emptyRow(7, '未来30天没有到期的证书', '一切正常,继续保持');
+      return;
+    }
+    const map = await crewMap();
+    $('#tbody').innerHTML = list.map(c => {
+      const crew = map[c.crewId] || {};
+      return `
+        <tr>
+          <td>
+            <div class="cell-crew">
+              ${avatarHTML(crew.name || '?', 32)}
+              <div class="c-main">
+                <div class="c-name"><a href="crew.html">${esc(crew.name || ('船员#' + c.crewId))}</a></div>
+                <div class="c-sub">${esc(crew.crewNo || '')}</div>
+              </div>
+            </div>
+          </td>
+          <td><div class="cell-two"><div class="t1">${esc(c.certName)}</div></div></td>
+          <td>${esc(c.certNo || '—')}</td>
+          <td>${chip(c.certType || '其他', 'teal')}</td>
+          <td>${fmtDate(c.expireDate)} ${daysChip(c.expireDate)}</td>
+          <td>${esc(c.issueOrg || '—')}</td>
+          <td>${certActions(c)}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  /* ---------- 新增 / 编辑 ---------- */
+  function openEdit(id) {
+    if (mode !== 'crew' || !$('#fCrew').value) { toast('请先在上方选择船员', 'info'); return; }
+    const c = id ? list.find(x => x.id === id) : null;
+    const m = showModal({
+      title: c ? '编辑证书' : '新增证书',
+      width: 600,
+      body: `
+        <div class="form-grid">
+          <input type="hidden" id="eId" value="${c ? c.id : ''}">
+          <div class="field"><label>证书名称<b>*</b></label><input class="input" id="eName" value="${c ? esc(c.certName) : ''}" placeholder="如 无限航区适任证书"></div>
+          <div class="field"><label>证书编号</label><input class="input" id="eNo" value="${c ? esc(c.certNo) : ''}" placeholder="证书编号"></div>
+          <div class="field"><label>证书类型</label>
+            <select class="select" id="eType">
+              ${CERT_TYPES.map(t => `<option value="${t}" ${c && c.certType === t ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>签发机构</label><input class="input" id="eOrg" value="${c ? esc(c.issueOrg) : ''}" placeholder="如 海事局"></div>
+          <div class="field"><label>签发日期</label><input class="input" type="date" id="eIssue" value="${c && c.issueDate ? fmtDate(c.issueDate) : ''}"></div>
+          <div class="field"><label>到期日期<b>*</b></label><input class="input" type="date" id="eExpire" value="${c && c.expireDate ? fmtDate(c.expireDate) : ''}"></div>
+        </div>`,
+      foot: `
+        <button class="btn btn-ghost" data-close>取消</button>
+        <button class="btn btn-primary" data-save>保存</button>`,
+      onOpen(root) {
+        $('[data-save]', root).onclick = async () => {
+          const certName = $('#eName', root).value.trim();
+          const expireDate = $('#eExpire', root).value;
+          if (!certName) { toast('请填写证书名称', 'err'); return; }
+          if (!expireDate) { toast('请选择到期日期', 'err'); return; }
+          const id = $('#eId', root).value;
+          const body = {
+            crewId: +$('#fCrew').value,
+            certName,
+            certNo: $('#eNo', root).value.trim(),
+            certType: $('#eType', root).value,
+            issueOrg: $('#eOrg', root).value.trim(),
+            issueDate: $('#eIssue', root).value || null,
+            expireDate
+          };
+          if (id) body.id = +id;
+          try {
+            if (id) await put('/api/cert', body); else await post('/api/cert', body);
+            toast(id ? '证书已更新' : '证书已添加');
+            m.close();
+            load();
+          } catch (err) {
+            toast(err.message, 'err');
+          }
+        };
+      }
+    });
+  }
+
+  /* ---------- 删除 ---------- */
+  async function removeCert(id, name) {
+    const ok = await ask(`确定删除证书「${name}」吗?`, { okText: '删除' });
+    if (!ok) return;
+    try {
+      await del(`/api/cert/${id}`);
+      toast('证书已删除');
+      load();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  /* ---------- 初始化 ---------- */
+  switchMode(mode);
+  initCrewSelect();
+</script>
+</body>
+</html>

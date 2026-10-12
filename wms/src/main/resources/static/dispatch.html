@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>派员管理 · 船员管理系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%230b8fa5'/%3E%3Cpath d='m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar" id="topbar"></header>
+    <main class="content">
+
+      <div class="panel filterbar">
+        <div class="seg" id="tabSeg">
+          <button data-tab="crew">按船员查询</button>
+          <button data-tab="ship">按船舶查询</button>
+        </div>
+        <div class="field" id="crewField" style="width:280px">
+          <label>船员</label>
+          <select class="select" id="fCrew"></select>
+        </div>
+        <div class="field" id="shipField" style="width:240px;display:none">
+          <label>船名</label>
+          <div style="display:flex;gap:8px">
+            <input class="input" id="fShip" placeholder="输入船名查询在船人员">
+            <button class="btn btn-primary" onclick="load()">查询</button>
+          </div>
+        </div>
+        <div class="spacer"></div>
+        <div class="f-actions">
+          <button class="btn btn-primary" onclick="openOnboard()">+ 派员上船</button>
+        </div>
+      </div>
+
+      <div class="banner" id="banner" style="display:none">
+        <span id="bannerIc"></span>
+        <span id="bannerText"></span>
+        <span class="spacer"></span>
+        <button class="btn-link" onclick="clearBanner()">清除</button>
+      </div>
+
+      <div class="panel">
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead id="thead"></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="tbl-foot"><span class="pg-info" id="countInfo"></span></div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="js/common.js"></script>
+<script>
+  initPage('dispatch', '派员管理', '船员上船 / 下船 · 状态自动联动');
+
+  const HEAD_CREW = '<tr><th>船名</th><th>上船日期</th><th>下船日期</th><th>状态</th><th>备注</th><th style="width:110px">操作</th></tr>';
+  const HEAD_SHIP = '<tr><th>在船人员</th><th>职务</th><th>上船日期</th><th>状态</th><th>备注</th><th style="width:110px">操作</th></tr>';
+
+  let tab = 'crew';
+  let list = [];
+  let shipQuery = '';
+
+  const urlCrewId = qCrewId();
+  const urlName = qName();
+  const urlShip = qs.get('ship');
+
+  /* ---------- 标签切换 ---------- */
+  $$('#tabSeg button').forEach(b => { b.onclick = () => switchTab(b.dataset.tab); });
+  function switchTab(t) {
+    tab = t;
+    $$('#tabSeg button').forEach(b => b.classList.toggle('on', b.dataset.tab === t));
+    $('#crewField').style.display = t === 'crew' ? '' : 'none';
+    $('#shipField').style.display = t === 'ship' ? '' : 'none';
+    if (t === 'crew') {
+      if ($('#fCrew').value) showCrewBanner($('#fCrew').value);
+      else $('#banner').style.display = 'none';
+    } else {
+      if (shipQuery) showShipBanner(shipQuery);
+      else $('#banner').style.display = 'none';
+    }
+    load();
+  }
+
+  /* ---------- 船员下拉 ---------- */
+  async function initCrewSelect() {
+    try {
+      await fillCrewSelect($('#fCrew'), { placeholder: '选择船员查看派员记录' });
+      if (urlCrewId) $('#fCrew').value = urlCrewId;
+      $('#fCrew').onchange = () => {
+        if ($('#fCrew').value) showCrewBanner($('#fCrew').value);
+        load();
+      };
+      if (tab === 'crew') {
+        if ($('#fCrew').value) showCrewBanner($('#fCrew').value);
+        load();
+      }
+    } catch (err) { toast(err.message, 'err'); }
+  }
+  // 上船/下船后船员状态变化,刷新下拉框选项但保持当前选择
+  async function refreshCrewOptions() {
+    const cur = $('#fCrew').value;
+    try {
+      await fillCrewSelect($('#fCrew'), { placeholder: '选择船员查看派员记录', selected: cur });
+    } catch (err) { /* 忽略 */ }
+  }
+
+  /* ---------- 横幅 ---------- */
+  async function showCrewBanner(crewId) {
+    let name = urlName || '';
+    try {
+      const map = await crewMap();
+      if (map[crewId]) name = map[crewId].name;
+    } catch (e) { /* 忽略 */ }
+    $('#bannerText').innerHTML = `正在查看船员 <span class="b-name">${esc(name || ('船员#' + crewId))}</span> 的派员记录`;
+    $('#bannerIc').innerHTML = icon('anchor');
+    $('#banner').style.display = '';
+  }
+  function showShipBanner(ship) {
+    $('#bannerText').innerHTML = `「<span class="b-name">${esc(ship)}</span>」当前在船人员`;
+    $('#bannerIc').innerHTML = icon('ship');
+    $('#banner').style.display = '';
+  }
+  function clearBanner() {
+    if (tab === 'crew') $('#fCrew').value = '';
+    else { $('#fShip').value = ''; shipQuery = ''; }
+    $('#banner').style.display = 'none';
+    load();
+  }
+
+  /* ---------- 数据加载 ---------- */
+  async function load() {
+    try {
+      $('#thead').innerHTML = tab === 'crew' ? HEAD_CREW : HEAD_SHIP;
+      if (tab === 'crew') {
+        const crewId = $('#fCrew').value;
+        if (!crewId) {
+          list = [];
+          $('#tbody').innerHTML = emptyRow(6, '请选择一位船员', '在上方下拉框中选择船员,即可查看其派员记录');
+          $('#countInfo').textContent = '';
+          return;
+        }
+        list = await api(`/api/dispatch/list/${crewId}`) || [];
+        renderCrewTab();
+      } else {
+        shipQuery = $('#fShip').value.trim();
+        if (!shipQuery) {
+          list = [];
+          $('#tbody').innerHTML = emptyRow(6, '请输入船名', '输入船名后点击「查询」,查看该船当前在船人员');
+          $('#countInfo').textContent = '';
+          return;
+        }
+        list = await api(`/api/dispatch/ship/${encodeURIComponent(shipQuery)}`) || [];
+        renderShipTab();
+        showShipBanner(shipQuery);
+      }
+      $('#countInfo').textContent = `共 ${list.length} 条记录`;
+    } catch (err) {
+      toast(err.message, 'err');
+      $('#tbody').innerHTML = emptyRow(6, '数据加载失败', err.message);
+    }
+  }
+
+  function statusBadge(s) {
+    return s === '在船' ? chip('在船', 'green', 'ship') : chip(s || '—', 'gray');
+  }
+
+  async function renderCrewTab() {
+    if (!list.length) {
+      $('#tbody').innerHTML = emptyRow(6, '该船员暂无派员记录', '点击「派员上船」为该船员安排上船');
+      return;
+    }
+    $('#tbody').innerHTML = list.map(d => `
+      <tr>
+        <td><div class="cell-two"><div class="t1">${icon('ship')} ${esc(d.shipName || '—')}</div></div></td>
+        <td>${fmtDate(d.onboardDate)}</td>
+        <td>${fmtDate(d.offboardDate)}</td>
+        <td>${statusBadge(d.status)}</td>
+        <td>${esc(d.remark || '—')}</td>
+        <td>${d.status === '在船'
+          ? `<button class="btn btn-soft btn-sm" onclick="offboard(${d.id})">${icon('anchor')}下船</button>`
+          : '<span style="font-size:12px;color:var(--ink-3)">—</span>'}</td>
+      </tr>`).join('');
+  }
+
+  async function renderShipTab() {
+    if (!list.length) {
+      $('#tbody').innerHTML = emptyRow(6, '该船当前没有在船人员', '');
+      return;
+    }
+    const map = await crewMap();
+    $('#tbody').innerHTML = list.map(d => {
+      const crew = map[d.crewId] || {};
+      return `
+        <tr>
+          <td>
+            <div class="cell-crew">
+              ${avatarHTML(crew.name || '?', 32)}
+              <div class="c-main">
+                <div class="c-name"><a href="crew.html">${esc(crew.name || ('船员#' + d.crewId))}</a></div>
+                <div class="c-sub">${esc(crew.crewNo || '')}</div>
+              </div>
+            </div>
+          </td>
+          <td>${esc(crew.position || '—')}</td>
+          <td>${fmtDate(d.onboardDate)}</td>
+          <td>${statusBadge(d.status)}</td>
+          <td>${esc(d.remark || '—')}</td>
+          <td>${d.status === '在船'
+            ? `<button class="btn btn-soft btn-sm" onclick="offboard(${d.id})">${icon('anchor')}下船</button>`
+            : '<span style="font-size:12px;color:var(--ink-3)">—</span>'}</td>
+        </tr>`;
+    }).join('');
+  }
+
+  /* ---------- 派员上船 ---------- */
+  function openOnboard() {
+    const m = showModal({
+      title: '派员上船',
+      width: 520,
+      body: `
+        <div class="form-grid">
+          <div class="field full"><label>船员<b>*</b> <span class="hint">(仅显示在岸可派的船员)</span></label>
+            <select class="select" id="eCrewId"><option value="">加载中…</option></select>
+          </div>
+          <div class="field full"><label>船名<b>*</b></label><input class="input" id="eShip" value="${tab === 'ship' ? esc(shipQuery || '') : ''}" placeholder="如 远洋号"></div>
+          <div class="field full"><label>备注</label><input class="input" id="eRemark" placeholder="如 接班三副"></div>
+        </div>
+        <div style="margin-top:12px;font-size:12px;color:var(--ink-3)">上船后船员状态将自动变更为「在船」,下船时自动恢复「在岸」。</div>`,
+      foot: `
+        <button class="btn btn-ghost" data-close>取消</button>
+        <button class="btn btn-primary" data-save>确认上船</button>`,
+      onOpen(root) {
+        // 只加载在岸船员
+        fillCrewSelect($('#eCrewId', root), { status: '在岸', placeholder: '选择在岸船员' })
+          .then(() => {
+            if (tab === 'crew' && $('#fCrew').value) {
+              const v = $('#fCrew').value;
+              if ($(`#eCrewId option[value="${v}"]`, root)) $('#eCrewId', root).value = v;
+            }
+          })
+          .catch(err => toast(err.message, 'err'));
+
+        $('[data-save]', root).onclick = async () => {
+          const crewId = $('#eCrewId', root).value;
+          const shipName = $('#eShip', root).value.trim();
+          if (!crewId) { toast('请选择船员', 'err'); return; }
+          if (!shipName) { toast('请填写船名', 'err'); return; }
+          try {
+            await post('/api/dispatch/onboard', {
+              crewId: +crewId,
+              shipName,
+              remark: $('#eRemark', root).value.trim()
+            });
+            toast('派员成功,船员状态已更新为「在船」');
+            m.close();
+            // 若在船员标签页且选择的是同一船员,刷新其记录
+            if (tab === 'crew') load();
+            else {
+              $('#fShip').value = shipName;
+              load();
+            }
+            // 船员下拉缓存可能已过期(状态变了),清除后重新加载
+            delete _crewCache['all'];
+            delete _crewCache['在岸'];
+            refreshCrewOptions();
+          } catch (err) {
+            toast(err.message, 'err');
+          }
+        };
+      }
+    });
+  }
+
+  /* ---------- 下船 ---------- */
+  async function offboard(id) {
+    const ok = await ask('确定办理该船员下船吗?下船后船员状态将自动恢复为「在岸」。', { okText: '确认下船' });
+    if (!ok) return;
+    try {
+      await post(`/api/dispatch/offboard/${id}`, {});
+      toast('下船成功,船员状态已恢复为「在岸」');
+      load();
+      delete _crewCache['all'];
+      delete _crewCache['在岸'];
+      refreshCrewOptions();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  /* ---------- 初始化 ---------- */
+  switchTab(tab);
+  initCrewSelect();
+  if (urlShip) { tab = 'ship'; $('#fShip').value = urlShip; switchTab('ship'); }
+</script>
+</body>
+</html>

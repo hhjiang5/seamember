@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>统计报表 · 船员管理系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%230b8fa5'/%3E%3Cpath d='m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar" id="topbar"></header>
+    <main class="content">
+
+      <!-- 总览指标 -->
+      <section class="stats">
+        <div class="stat teal" onclick="location.href='crew.html'">
+          <div class="st-ic"></div>
+          <div class="num" id="stTotal">–</div>
+          <div class="lbl">船员总数</div>
+        </div>
+        <div class="stat green" onclick="location.href='crew.html?status=' + encodeURIComponent('在船')">
+          <div class="st-ic"></div>
+          <div class="num" id="stOnboard">–</div>
+          <div class="lbl">在船人数</div>
+        </div>
+        <div class="stat blue" onclick="location.href='crew.html?status=' + encodeURIComponent('在岸')">
+          <div class="st-ic"></div>
+          <div class="num" id="stOnshore">–</div>
+          <div class="lbl">在岸人数</div>
+        </div>
+        <div class="stat amber" onclick="location.href='cert.html'">
+          <div class="st-ic"></div>
+          <div class="num" id="stCert">–</div>
+          <div class="lbl">证书到期预警 · 30天内</div>
+        </div>
+        <div class="stat red" onclick="location.href='contract.html'">
+          <div class="st-ic"></div>
+          <div class="num" id="stContract">–</div>
+          <div class="lbl">合同到期预警 · 30天内</div>
+        </div>
+        <div class="stat slate" onclick="location.href='dispatch.html'">
+          <div class="st-ic"></div>
+          <div class="num" id="stShip">–</div>
+          <div class="lbl">在船船舶数</div>
+        </div>
+      </section>
+
+      <!-- 分布图表 -->
+      <section class="dash-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="hd-ic"></span>
+            <h2>职务分布</h2>
+            <span class="hd-count"><span class="chip teal" id="posCount"></span></span>
+          </div>
+          <div class="chart-body">
+            <div class="bar-chart" id="posChart"></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="hd-ic"></span>
+            <h2>状态分布</h2>
+            <span class="hd-count"><span class="chip blue" id="statusCount"></span></span>
+          </div>
+          <div class="chart-body">
+            <div class="donut-wrap" id="statusWrap"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" style="margin-top:14px">
+        <div class="panel-head">
+          <span class="hd-ic"></span>
+          <h2>在船人员 · 船舶分布</h2>
+          <span class="hd-count"><span class="chip green" id="shipCount"></span></span>
+        </div>
+        <div class="chart-body">
+          <div class="bar-chart" id="shipChart"></div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="js/common.js"></script>
+<script>
+  initPage('report', '统计报表', '船员、证书、合同与船舶的分布统计');
+
+  const STATUS_META = {
+    '在船': { color: '#18956b', icon: 'ship' },
+    '在岸': { color: '#2f6fb4', icon: 'anchor' },
+    '休假': { color: '#d9822b', icon: 'calendar' }
+  };
+
+  /* ---- 数字滚动动画 ---- */
+  function countUp(el, target) {
+    target = target || 0;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = target; return; }
+    const dur = 650, t0 = performance.now();
+    function step(t) {
+      const p = Math.min(1, (t - t0) / dur);
+      el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  function chartEmpty(msg) {
+    return `<div class="empty"><div class="e-ic">📊</div><div class="e-t">${esc(msg)}</div></div>`;
+  }
+
+  /* ---- 横向条形图 ---- */
+  function renderBars(el, rows, fill) {
+    if (!rows.length) { el.innerHTML = chartEmpty('暂无数据'); return; }
+    const max = Math.max(...rows.map(x => x.value));
+    el.innerHTML = rows.map(x => `
+      <div class="bar-row">
+        <span class="bar-label" title="${esc(x.label)}">${esc(x.label)}</span>
+        <div class="bar-track"><div class="bar-fill" data-w="${(x.value / max * 100).toFixed(1)}" style="background:${fill || ''}"></div></div>
+        <span class="bar-val">${x.value}</span>
+      </div>`).join('');
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      $$('.bar-fill', el).forEach(b => { b.style.width = b.dataset.w + '%'; });
+    }));
+  }
+
+  /* ---- 环形图(SVG) ---- */
+  function donutSVG(segs, total) {
+    const size = 180, r = 64, cx = 90, cy = 90;
+    const C = 2 * Math.PI * r;
+    const gap = segs.length > 1 ? 2.5 : 0;
+    let offset = 0;
+    const circles = segs.map(s => {
+      const frac = s.value / total;
+      const len = Math.max(frac * C - gap, 0.6);
+      const el = `<circle r="${r}" cx="${cx}" cy="${cy}" fill="none" stroke="${s.color}" stroke-width="24"
+        stroke-dasharray="${len} ${C - len}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})"/>`;
+      offset += frac * C;
+      return el;
+    }).join('');
+    return `
+      <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="船员状态分布图">
+        <circle r="${r}" cx="${cx}" cy="${cy}" fill="none" stroke="#edf1f6" stroke-width="24"/>
+        ${circles}
+        <text x="${cx}" y="${cy - 2}" text-anchor="middle" font-size="27" font-weight="800" fill="#17293e">${total}</text>
+        <text x="${cx}" y="${cy + 19}" text-anchor="middle" font-size="12" fill="#8ca0b5">船员总数</text>
+      </svg>`;
+  }
+
+  /* ---- 数据加载 ---- */
+  (async function load() {
+    try {
+      const [ov, pos, st, ship] = await Promise.all([
+        api('/api/stat/overview'),
+        api('/api/stat/position'),
+        api('/api/stat/status'),
+        api('/api/stat/ship')
+      ]);
+
+      // 总览
+      countUp($('#stTotal'), ov.totalCrew || 0);
+      countUp($('#stOnboard'), ov.onboardCount || 0);
+      countUp($('#stOnshore'), ov.onshoreCount || 0);
+      countUp($('#stCert'), ov.expiringCert || 0);
+      countUp($('#stContract'), ov.expiringContract || 0);
+
+      // 职务分布
+      const posRows = (pos || [])
+        .map(r => ({ label: r.position || '未填写', value: +r.num || 0 }))
+        .sort((a, b) => b.value - a.value);
+      $('#posCount').textContent = `${posRows.length} 类`;
+      renderBars($('#posChart'), posRows);
+
+      // 状态分布
+      const stRows = (st || []).map(r => ({ label: r.status || '未知', value: +r.num || 0 }));
+      const stTotal = stRows.reduce((s, x) => s + x.value, 0);
+      $('#statusCount').textContent = `${stTotal} 人`;
+      if (!stTotal) {
+        $('#statusWrap').innerHTML = chartEmpty('暂无船员状态数据');
+      } else {
+        const segs = stRows.map(x => ({
+          ...x,
+          color: (STATUS_META[x.label] || { color: '#8ca0b5' }).color
+        }));
+        $('#statusWrap').innerHTML = donutSVG(segs, stTotal) + `
+          <div class="donut-legend">${segs.map(s => `
+            <div class="legend-item">
+              <span class="legend-dot" style="background:${s.color}"></span>
+              ${STATUS_META[s.label] ? icon(STATUS_META[s.label].icon) : ''}
+              <span>${esc(s.label)}</span>
+              <span class="lg-pct">${(s.value / stTotal * 100).toFixed(0)}%</span>
+              <span class="lg-val">${s.value}</span>
+            </div>`).join('')}
+          </div>`;
+      }
+
+      // 船舶分布
+      const shipRows = (ship || [])
+        .map(r => ({ label: r.ship_name || '未命名', value: +r.num || 0 }))
+        .sort((a, b) => b.value - a.value);
+      $('#shipCount').textContent = `${shipRows.length} 艘`;
+      countUp($('#stShip'), shipRows.length);
+      renderBars($('#shipChart'), shipRows, 'linear-gradient(90deg,#3f7fc4,#2f6fb4)');
+
+      // 面板标题图标
+      $$('.panel-head .hd-ic').forEach((el, i) => { el.innerHTML = icon(['briefcase', 'anchor', 'ship'][i]); });
+      $$('.stat .st-ic').forEach((el, i) => { el.innerHTML = icon(['crew', 'ship', 'anchor', 'cert', 'contract', 'report'][i]); });
+    } catch (err) {
+      toast(err.message, 'err');
+      ['posChart', 'statusWrap', 'shipChart'].forEach(id => {
+        const el = $('#' + id);
+        if (!el.innerHTML) el.innerHTML = chartEmpty('数据加载失败');
+      });
+    }
+  })();
+</script>
+</body>
+</html>

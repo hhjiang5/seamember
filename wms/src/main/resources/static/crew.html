@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>船员管理 · 船员管理系统</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%230b8fa5'/%3E%3Cpath d='m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar" id="topbar"></header>
+    <main class="content">
+
+      <div class="panel filterbar">
+        <div class="field" style="width:220px">
+          <label>姓名</label>
+          <input class="input" id="fName" placeholder="输入姓名搜索">
+        </div>
+        <div class="field" style="width:170px">
+          <label>工号</label>
+          <input class="input" id="fCrewNo" placeholder="输入工号搜索">
+        </div>
+        <div class="field" style="width:150px">
+          <label>状态</label>
+          <select class="select" id="fStatus">
+            <option value="">全部状态</option>
+            <option value="在岸">在岸</option>
+            <option value="在船">在船</option>
+            <option value="休假">休假</option>
+          </select>
+        </div>
+        <div class="f-actions">
+          <button class="btn btn-primary" onclick="search()">查询</button>
+          <button class="btn btn-ghost" onclick="resetFilter()">重置</button>
+        </div>
+        <div class="spacer"></div>
+        <div class="f-actions">
+          <button class="btn btn-primary" onclick="openEdit()">+ 新增船员</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead>
+            <tr>
+              <th>船员</th><th>性别</th><th>职务</th><th>联系电话</th><th>状态</th><th style="min-width:280px">操作</th>
+            </tr>
+            </thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="tbl-foot" id="pager"></div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="js/common.js"></script>
+<script>
+  initPage('crew', '船员管理', '海员档案 · 支持跳转到该船员的证书、合同、培训与派员记录');
+
+  const POSITIONS = ['船长', '大副', '二副', '三副', '轮机长', '大管轮', '二管轮', '三管轮', '水手长', '水手', '机工', '厨师', '服务员', '其他'];
+  let page = 1, pages = 1, total = 0, pageList = [];
+
+  // 查询按钮图标
+  $('.filterbar .f-actions .btn-primary').innerHTML = icon('search') + '查询';
+
+  // 支持从仪表盘带状态进入: crew.html?status=在船
+  const urlStatus = qs.get('status');
+  if (urlStatus && ['在岸', '在船', '休假'].includes(urlStatus)) $('#fStatus').value = urlStatus;
+
+  /* ---------- 数据加载 ---------- */
+  async function load() {
+    try {
+      const params = new URLSearchParams({ pageNum: page, pageSize: 10 });
+      const name = $('#fName').value.trim();
+      const crewNo = $('#fCrewNo').value.trim();
+      const status = $('#fStatus').value;
+      if (name) params.set('name', name);
+      if (crewNo) params.set('crewNo', crewNo);
+      if (status) params.set('status', status);
+
+      const data = await api(`/api/crew/page?${params}`);
+      pageList = data.records || [];
+      pages = data.pages || 1;
+      total = data.total || 0;
+      renderTable();
+      renderPager($('#pager'), { current: page, pages, total, onChange: p => { page = p; load(); } });
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  function renderTable() {
+    const tbody = $('#tbody');
+    if (!pageList.length) {
+      tbody.innerHTML = emptyRow(6, '暂无船员数据', '点击右上角「新增船员」录入第一位海员');
+      return;
+    }
+    tbody.innerHTML = pageList.map(c => `
+      <tr>
+        <td>
+          <div class="cell-crew">
+            ${avatarHTML(c.name, 36)}
+            <div class="c-main">
+              <div class="c-name"><a href="javascript:void(0)" onclick="openDetail(${c.id})">${esc(c.name)}</a></div>
+              <div class="c-sub">${esc(c.crewNo || '未编号')}</div>
+            </div>
+          </div>
+        </td>
+        <td>${esc(c.gender || '—')}</td>
+        <td>${esc(c.position || '—')}</td>
+        <td>${esc(c.phone || '—')}</td>
+        <td>${crewBadge(c.status)}</td>
+        <td>
+          <div class="td-actions">
+            <button class="pill" title="查看该船员的证书" onclick="jump('cert', ${c.id})">${icon('cert')}证书</button>
+            <button class="pill" title="查看该船员的合同" onclick="jump('contract', ${c.id})">${icon('contract')}合同</button>
+            <button class="pill" title="查看该船员的培训" onclick="jump('training', ${c.id})">${icon('training')}培训</button>
+            <button class="pill" title="查看该船员的派员记录" onclick="jump('dispatch', ${c.id})">${icon('ship')}派员</button>
+            <button class="btn-icon" title="编辑" onclick="openEdit(${c.id})">${icon('edit')}</button>
+            <button class="btn-icon danger" title="删除" onclick="removeCrew(${c.id}, '${esc(c.name)}')">${icon('trash')}</button>
+          </div>
+        </td>
+      </tr>`).join('');
+  }
+
+  function search() { page = 1; load(); }
+  function resetFilter() { $('#fName').value = ''; $('#fCrewNo').value = ''; $('#fStatus').value = ''; page = 1; load(); }
+
+  /* ---------- 跳转到该船员的关联信息 ---------- */
+  function jump(mod, id) {
+    const c = pageList.find(x => x.id === id);
+    if (!c) return;
+    location.href = `${mod}.html?crewId=${c.id}&name=${encodeURIComponent(c.name)}`;
+  }
+
+  /* ---------- 船员详情 ---------- */
+  async function openDetail(id) {
+    try {
+      const c = await api(`/api/crew/${id}`);
+      const m = showModal({
+        title: '船员详情',
+        width: 620,
+        body: `
+          <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px">
+            ${avatarHTML(c.name, 52)}
+            <div style="flex:1">
+              <div style="font-size:16px;font-weight:800">${esc(c.name)} ${crewBadge(c.status)}</div>
+              <div style="font-size:12.5px;color:var(--ink-3);margin-top:4px">${esc(c.crewNo || '未编号')} · ${esc(c.position || '未填写职务')}</div>
+            </div>
+            ${c.photo ? `<img src="${esc(c.photo)}" alt="照片" style="width:56px;height:56px;border-radius:10px;object-fit:cover;border:1px solid var(--line)"
+                 onerror="this.style.display='none'">` : ''}
+          </div>
+          <div class="detail-grid">
+            <div class="dg"><div class="k">性别</div><div class="v">${esc(c.gender || '—')}</div></div>
+            <div class="dg"><div class="k">联系电话</div><div class="v">${esc(c.phone || '—')}</div></div>
+            <div class="dg"><div class="k">身份证号</div><div class="v">${esc(c.idCard || '—')}</div></div>
+            <div class="dg"><div class="k">当前状态</div><div class="v">${esc(c.status || '—')}</div></div>
+            <div class="dg"><div class="k">职务</div><div class="v">${esc(c.position || '—')}</div></div>
+            <div class="dg"><div class="k">建档时间</div><div class="v">${fmtDate(c.createTime)}</div></div>
+          </div>
+          <div style="margin-top:18px;font-size:12px;color:var(--ink-3);font-weight:700">查看该船员的关联信息</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+            <button class="btn btn-soft btn-sm" onclick="jump('cert', ${c.id})">${icon('cert')}证书</button>
+            <button class="btn btn-soft btn-sm" onclick="jump('contract', ${c.id})">${icon('contract')}合同</button>
+            <button class="btn btn-soft btn-sm" onclick="jump('training', ${c.id})">${icon('training')}培训</button>
+            <button class="btn btn-soft btn-sm" onclick="jump('dispatch', ${c.id})">${icon('ship')}派员记录</button>
+          </div>`,
+        foot: `<button class="btn btn-ghost" data-close>关闭</button>`
+      });
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  /* ---------- 新增 / 编辑 ---------- */
+  function openEdit(id) {
+    const c = id ? pageList.find(x => x.id === id) : null;
+    const m = showModal({
+      title: c ? '编辑船员' : '新增船员',
+      width: 620,
+      body: `
+        <div class="form-grid">
+          <input type="hidden" id="eId" value="${c ? c.id : ''}">
+          <div class="field"><label>姓名<b>*</b></label><input class="input" id="eName" value="${c ? esc(c.name) : ''}" placeholder="请输入姓名"></div>
+          <div class="field"><label>工号</label><input class="input" id="eCrewNo" value="${c ? esc(c.crewNo) : ''}" placeholder="如 ZS001"></div>
+          <div class="field"><label>性别</label>
+            <select class="select" id="eGender">
+              <option value="男" ${c && c.gender === '男' ? 'selected' : ''}>男</option>
+              <option value="女" ${c && c.gender === '女' ? 'selected' : ''}>女</option>
+            </select>
+          </div>
+          <div class="field"><label>职务</label>
+            <select class="select" id="ePosition">
+              <option value="">未填写</option>
+              ${POSITIONS.map(p => `<option value="${p}" ${c && c.position === p ? 'selected' : ''}>${p}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>联系电话</label><input class="input" id="ePhone" maxlength="11" oninput="this.value=this.value.replace(/\D/g,'')" value="${c ? esc(c.phone) : ''}" placeholder="请输入 11 位手机号"></div>
+          <div class="field"><label>身份证号</label><input class="input" id="eIdCard" maxlength="18" oninput="this.value=this.value.replace(/[^0-9Xx]/g,'').toUpperCase()" value="${c ? esc(c.idCard) : ''}" placeholder="请输入 18 位身份证号"></div>
+          <div class="field"><label>状态</label>
+            <select class="select" id="eStatus">
+              <option value="在岸" ${!c || c.status === '在岸' ? 'selected' : ''}>在岸</option>
+              <option value="在船" ${c && c.status === '在船' ? 'selected' : ''}>在船</option>
+              <option value="休假" ${c && c.status === '休假' ? 'selected' : ''}>休假</option>
+            </select>
+          </div>
+          <div class="field full"><label>照片地址 <span class="hint">(选填,图片 URL)</span></label><input class="input" id="ePhoto" value="${c ? esc(c.photo) : ''}" placeholder="https://…"></div>
+        </div>`,
+      foot: `
+        <button class="btn btn-ghost" data-close>取消</button>
+        <button class="btn btn-primary" data-save>保存</button>`,
+      onOpen(root) {
+        $('[data-save]', root).onclick = async () => {
+          const name = $('#eName', root).value.trim();
+          if (!name) { toast('请填写姓名', 'err'); $('#eName', root).focus(); return; }
+          const id = $('#eId', root).value;
+          const body = {
+            name,
+            crewNo: $('#eCrewNo', root).value.trim(),
+            gender: $('#eGender', root).value,
+            position: $('#ePosition', root).value,
+            phone: $('#ePhone', root).value.trim(),
+            idCard: $('#eIdCard', root).value.trim(),
+            status: $('#eStatus', root).value,
+            photo: $('#ePhoto', root).value.trim()
+          };
+          if (id) body.id = +id;
+          try {
+            if (id) await put('/api/crew', body); else await post('/api/crew', body);
+            toast(id ? '船员信息已更新' : '船员已添加');
+            m.close();
+            load();
+          } catch (err) {
+            toast(err.message, 'err');
+          }
+        };
+      }
+    });
+  }
+
+  /* ---------- 删除 ---------- */
+  async function removeCrew(id, name) {
+    const ok = await ask(`确定删除船员「${name}」吗?删除后该船员名下的证书、合同等记录仍会保留。`, { okText: '删除' });
+    if (!ok) return;
+    try {
+      await del(`/api/crew/${id}`);
+      toast('船员已删除');
+      if (pageList.length === 1 && page > 1) page--;
+      load();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  load();
+  if (qs.get('add') === '1') openEdit();
+</script>
+</body>
+</html>

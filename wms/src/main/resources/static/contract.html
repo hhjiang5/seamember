@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>合同管理 · 船员管理系统</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='%230b8fa5'/%3E%3Cpath d='m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z' fill='white'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="main">
+    <header class="topbar" id="topbar"></header>
+    <main class="content">
+
+      <div class="panel filterbar">
+        <div class="seg" id="modeSeg">
+          <button data-mode="all">全部合同</button>
+          <button data-mode="expiring">到期预警 · 30天内</button>
+        </div>
+        <div class="field" id="crewField" style="width:280px">
+          <label>船员</label>
+          <select class="select" id="fCrew"></select>
+        </div>
+        <div class="spacer"></div>
+        <div class="f-actions">
+          <button class="btn btn-primary" onclick="openEdit()">+ 新增合同</button>
+        </div>
+      </div>
+
+      <div class="banner" id="banner" style="display:none">
+        <span id="bannerIc"></span>
+        <span>正在查看船员 <span class="b-name" id="bannerName"></span> 的合同</span>
+        <span class="spacer"></span>
+        <button class="btn-link" onclick="clearBanner()">清除</button>
+      </div>
+
+      <div class="panel">
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead id="thead"></thead>
+            <tbody id="tbody"></tbody>
+          </table>
+        </div>
+        <div class="tbl-foot" id="pager"></div>
+      </div>
+
+    </main>
+  </div>
+</div>
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="js/common.js"></script>
+<script>
+  initPage('contract', '合同管理', '劳动合同与劳务合同 · 到期自动预警');
+
+  const CONTRACT_TYPES = ['劳动合同', '劳务合同', '返聘协议', '其他'];
+  const CURRENCIES = ['人民币', '美元', '欧元', '港币'];
+  const CUR_SYM = { '人民币': '¥', '美元': '$', '欧元': '€', '港币': 'HK$' };
+  const HEAD_ALL = '<tr><th>船员</th><th>合同类型</th><th>合同编号</th><th>合同期限</th><th>签约公司</th><th>薪资</th><th>状态</th><th style="width:110px">操作</th></tr>';
+
+  let mode = 'all';
+  let page = 1, pages = 1, total = 0, list = [];
+
+  const urlCrewId = qCrewId();
+  const urlName = qName();
+
+  /* ---------- 模式切换 ---------- */
+  $$('#modeSeg button').forEach(b => { b.onclick = () => switchMode(b.dataset.mode); });
+  function switchMode(m) {
+    mode = m;
+    $$('#modeSeg button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+    $('#crewField').style.display = m === 'all' ? '' : 'none';
+    if (m !== 'all') $('#banner').style.display = 'none';
+    else if ($('#fCrew').value) showBanner($('#fCrew').value);
+    page = 1;
+    load();
+  }
+
+  /* ---------- 船员下拉 ---------- */
+  async function initCrewSelect() {
+    try {
+      await fillCrewSelect($('#fCrew'), { all: true });
+      if (urlCrewId) {
+        $('#fCrew').value = urlCrewId;
+        showBanner(urlCrewId);
+      }
+      $('#fCrew').onchange = () => {
+        if ($('#fCrew').value) showBanner($('#fCrew').value);
+        else $('#banner').style.display = 'none';
+        page = 1;
+        load();
+      };
+      if (urlCrewId) load();
+    } catch (err) { toast(err.message, 'err'); }
+  }
+
+  async function showBanner(crewId) {
+    let name = urlName || '';
+    try {
+      const map = await crewMap();
+      if (map[crewId]) name = map[crewId].name;
+    } catch (e) { /* 忽略 */ }
+    $('#bannerName').textContent = name || ('船员#' + crewId);
+    $('#bannerIc').innerHTML = icon('contract');
+    $('#banner').style.display = '';
+  }
+  function clearBanner() { $('#fCrew').value = ''; $('#banner').style.display = 'none'; page = 1; load(); }
+
+  /* ---------- 数据加载 ---------- */
+  async function load() {
+    try {
+      $('#thead').innerHTML = HEAD_ALL;
+      if (mode === 'all') {
+        const params = new URLSearchParams({ pageNum: page, pageSize: 10 });
+        if ($('#fCrew').value) params.set('crewId', $('#fCrew').value);
+        const data = await api(`/api/contract/page?${params}`);
+        list = data.records || [];
+        pages = data.pages || 1;
+        total = data.total || 0;
+        await renderTable();
+        renderPager($('#pager'), { current: page, pages, total, onChange: p => { page = p; load(); } });
+      } else {
+        list = await api('/api/contract/expiring') || [];
+        await renderTable();
+        $('#pager').innerHTML = `<span class="pg-info">共 ${list.length} 份</span>`;
+      }
+    } catch (err) {
+      toast(err.message, 'err');
+      $('#tbody').innerHTML = emptyRow(8, '数据加载失败', err.message);
+    }
+  }
+
+  async function renderTable() {
+    if (!list.length) {
+      $('#tbody').innerHTML = mode === 'all'
+        ? emptyRow(8, '暂无合同数据', '点击「新增合同」登记第一份合同')
+        : emptyRow(8, '未来30天没有到期的合同', '一切正常,继续保持');
+      return;
+    }
+    const map = await crewMap();
+    $('#tbody').innerHTML = list.map(c => {
+      const crew = map[c.crewId] || {};
+      const sal = c.salary != null ? (CUR_SYM[c.currency] || '') + Number(c.salary).toLocaleString() : '—';
+      return `
+        <tr>
+          <td>
+            <div class="cell-crew">
+              ${avatarHTML(crew.name || '?', 32)}
+              <div class="c-main">
+                <div class="c-name"><a href="crew.html">${esc(crew.name || ('船员#' + c.crewId))}</a></div>
+                <div class="c-sub">${esc(crew.crewNo || '')}</div>
+              </div>
+            </div>
+          </td>
+          <td>${chip(c.contractType || '其他', 'blue')}</td>
+          <td>${esc(c.contractNo || '—')}</td>
+          <td>
+            <div class="cell-two">
+              <div class="t1">${fmtDate(c.startDate)} ~ ${fmtDate(c.endDate)}</div>
+              <div class="t2">${daysChip(c.endDate)}</div>
+            </div>
+          </td>
+          <td>${esc(c.signCompany || '—')}</td>
+          <td>${sal} ${c.currency ? `<span style="font-size:11.5px;color:var(--ink-3)">${esc(c.currency)}</span>` : ''}</td>
+          <td>${contractBadge(c.status)}</td>
+          <td>
+            <div class="td-actions">
+              <button class="btn-icon" title="编辑" onclick="openEdit(${c.id})">${icon('edit')}</button>
+              <button class="btn-icon danger" title="删除" onclick="removeContract(${c.id}, '${esc(c.contractNo || c.contractType || '')}')">${icon('trash')}</button>
+            </div>
+          </td>
+        </tr>`;
+    }).join('');
+  }
+
+  /* ---------- 新增 / 编辑 ---------- */
+  function openEdit(id) {
+    const c = id ? list.find(x => x.id === id) : null;
+    const m = showModal({
+      title: c ? '编辑合同' : '新增合同',
+      width: 640,
+      body: `
+        <div class="form-grid">
+          <input type="hidden" id="eId" value="${c ? c.id : ''}">
+          <div class="field full"><label>船员<b>*</b></label>
+            <select class="select" id="eCrewId"><option value="">选择船员</option></select>
+          </div>
+          <div class="field"><label>合同类型</label>
+            <select class="select" id="eType">
+              ${CONTRACT_TYPES.map(t => `<option value="${t}" ${c && c.contractType === t ? 'selected' : ''}>${t}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>合同编号</label><input class="input" id="eNo" value="${c ? esc(c.contractNo) : ''}" placeholder="合同编号"></div>
+          <div class="field"><label>签约公司</label><input class="input" id="eCompany" value="${c ? esc(c.signCompany) : ''}" placeholder="签约公司名称"></div>
+          <div class="field"><label>签约日期</label><input class="input" type="date" id="eSign" value="${c && c.signDate ? fmtDate(c.signDate) : ''}"></div>
+          <div class="field"><label>开始日期<b>*</b></label><input class="input" type="date" id="eStart" value="${c && c.startDate ? fmtDate(c.startDate) : ''}"></div>
+          <div class="field"><label>结束日期<b>*</b></label><input class="input" type="date" id="eEnd" value="${c && c.endDate ? fmtDate(c.endDate) : ''}"></div>
+          <div class="field"><label>薪资</label><input class="input" type="number" step="0.01" id="eSalary" value="${c && c.salary != null ? c.salary : ''}" placeholder="月薪金额"></div>
+          <div class="field"><label>币种</label>
+            <select class="select" id="eCurrency">
+              ${CURRENCIES.map(u => `<option value="${u}" ${c && c.currency === u ? 'selected' : ''}>${u}</option>`).join('')}
+            </select>
+          </div>
+          <div class="field"><label>状态</label>
+            <select class="select" id="eStatus">
+              <option value="在期" ${!c || c.status === '在期' ? 'selected' : ''}>在期</option>
+              <option value="已到期" ${c && c.status === '已到期' ? 'selected' : ''}>已到期</option>
+              <option value="已解除" ${c && c.status === '已解除' ? 'selected' : ''}>已解除</option>
+            </select>
+          </div>
+        </div>`,
+      foot: `
+        <button class="btn btn-ghost" data-close>取消</button>
+        <button class="btn btn-primary" data-save>保存</button>`,
+      onOpen(root) {
+        // 填充船员下拉
+        fillCrewSelect($('#eCrewId', root), { placeholder: '选择船员' })
+          .then(() => {
+            const preset = c ? c.crewId : $('#fCrew').value;
+            if (preset) $('#eCrewId', root).value = String(preset);
+          })
+          .catch(err => toast(err.message, 'err'));
+
+        $('[data-save]', root).onclick = async () => {
+          const crewId = $('#eCrewId', root).value;
+          const startDate = $('#eStart', root).value;
+          const endDate = $('#eEnd', root).value;
+          if (!crewId) { toast('请选择船员', 'err'); return; }
+          if (!startDate || !endDate) { toast('请填写合同起止日期', 'err'); return; }
+          const id = $('#eId', root).value;
+          const body = {
+            crewId: +crewId,
+            contractType: $('#eType', root).value,
+            contractNo: $('#eNo', root).value.trim(),
+            signCompany: $('#eCompany', root).value.trim(),
+            signDate: $('#eSign', root).value || null,
+            startDate, endDate,
+            salary: $('#eSalary', root).value === '' ? null : +$('#eSalary', root).value,
+            currency: $('#eCurrency', root).value,
+            status: $('#eStatus', root).value
+          };
+          if (id) body.id = +id;
+          try {
+            if (id) await put('/api/contract', body); else await post('/api/contract', body);
+            toast(id ? '合同已更新' : '合同已添加');
+            m.close();
+            load();
+          } catch (err) {
+            toast(err.message, 'err');
+          }
+        };
+      }
+    });
+  }
+
+  /* ---------- 删除 ---------- */
+  async function removeContract(id, label) {
+    const ok = await ask(`确定删除合同「${label}」吗?`, { okText: '删除' });
+    if (!ok) return;
+    try {
+      await del(`/api/contract/${id}`);
+      toast('合同已删除');
+      if (mode === 'all' && list.length === 1 && page > 1) page--;
+      load();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+  }
+
+  /* ---------- 初始化 ---------- */
+  switchMode(mode);
+  initCrewSelect();
+</script>
+</body>
+</html>
